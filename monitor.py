@@ -1,138 +1,171 @@
+# monitor.py
 import psutil
-import time
 import subprocess
-import json
+import time
 import logging
+import platform
+import os
 
 logging.basicConfig(filename='monitor.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class SystemMonitor:
+    def __init__(self):
+        self.running = True
+        self.net_io = psutil.net_io_counters()
+        self.disk_io = psutil.disk_io_counters()
+
     def get_cpu_usage(self):
-        """Возвращает загрузку CPU в процентах для каждого ядра."""
-        try:
-            usage = psutil.cpu_percent(interval=1, percpu=True)
-            logging.debug(f"CPU usage: {usage}")
-            return usage
-        except Exception as e:
-            logging.error(f"CPU usage error: {str(e)}")
-            return [0] * psutil.cpu_count()
+        return psutil.cpu_percent(percpu=True)
 
     def get_cpu_freq(self):
-        """Возвращает частоту CPU."""
         try:
-            freq = psutil.cpu_freq()
-            result = freq.current if freq else "N/A"
-            logging.debug(f"CPU freq: {result}")
-            return result
+            freq = psutil.cpu_freq().current
+            return f"{freq:.0f}" if freq else "N/A"
         except Exception as e:
-            logging.error(f"CPU freq error: {str(e)}")
+            logging.error(f"get_cpu_freq error: {str(e)}")
             return "N/A"
 
     def get_cpu_temp(self):
-        """Возвращает температуру CPU (если доступно)."""
         try:
-            temps = psutil.sensors_temperatures()
-            for name, entries in temps.items():
-                for entry in entries:
-                    if "core" in entry.label.lower():
-                        logging.debug(f"CPU temp: {entry.current}")
-                        return entry.current
-            logging.debug("No CPU temp available")
+            if platform.system() == "Linux":
+                temps = psutil.sensors_temperatures()
+                for name, entries in temps.items():
+                    for entry in entries:
+                        if "coretemp" in name.lower() or "cpu" in entry.label.lower():
+                            return f"{entry.current:.1f}"
+            elif platform.system() == "Windows":
+                # Требуется дополнительная библиотека, например, wmi
+                return "N/A"
             return "N/A"
         except Exception as e:
-            logging.error(f"CPU temp error: {str(e)}")
+            logging.error(f"get_cpu_temp error: {str(e)}")
             return "N/A"
 
-    def get_ram_usage(self):
-        """Возвращает использование RAM."""
+    def get_fan_speeds(self):
         try:
-            ram = psutil.virtual_memory()
-            result = {
-                "total": ram.total / (1024 ** 3),  # В ГБ
-                "used": ram.used / (1024 ** 3),
-                "free": ram.free / (1024 ** 3),
-                "percent": ram.percent
-            }
-            logging.debug(f"RAM usage: {result}")
-            return result
+            if platform.system() == "Linux":
+                fans = psutil.sensors_fans()
+                return {name: entry.current for name, entries in fans.items() for entry in entries}
+            return {}
         except Exception as e:
-            logging.error(f"RAM usage error: {str(e)}")
-            return {"total": 0, "used": 0, "free": 0, "percent": 0}
+            logging.error(f"get_fan_speeds error: {str(e)}")
+            return {}
+
+    def get_ram_info(self):
+        try:
+            mem = psutil.virtual_memory()
+            return {
+                "percent": mem.percent,
+                "used": mem.used / (1024 ** 3)
+            }
+        except Exception as e:
+            logging.error(f"get_ram_info error: {str(e)}")
+            return {"percent": 0, "used": 0}
+
+    def get_ram_freq(self):
+        try:
+            if platform.system() == "Linux":
+                result = subprocess.run(["dmidecode", "-t", "17"], capture_output=True, text=True)
+                for line in result.stdout.splitlines():
+                    if "Speed" in line and "MHz" in line:
+                        return line.split(":")[1].strip().split()[0]
+            return "N/A"
+        except Exception as e:
+            logging.error(f"get_ram_freq error: {str(e)}")
+            return "N/A"
 
     def get_disk_usage(self):
-        """Возвращает использование диска (корневой раздел)."""
         try:
-            disk = psutil.disk_usage('/')
-            result = {
-                "total": disk.total / (1024 ** 3),  # В ГБ
-                "used": disk.used / (1024 ** 3),
-                "free": disk.free / (1024 ** 3),
-                "percent": disk.percent
-            }
-            logging.debug(f"Disk usage: {result}")
-            return result
+            disk = psutil.disk_usage("/")
+            return {"percent": disk.percent}
         except Exception as e:
-            logging.error(f"Disk usage error: {str(e)}")
-            return {"total": 0, "used": 0, "free": 0, "percent": 0}
+            logging.error(f"get_disk_usage error: {str(e)}")
+            return {"percent": 0}
 
     def get_disk_io(self):
-        """Возвращает статистику чтения/записи диска."""
         try:
-            io = psutil.disk_io_counters()
-            result = {
-                "read_bytes": io.read_bytes / (1024 ** 2) if io else 0,  # В МБ
-                "write_bytes": io.write_bytes / (1024 ** 2) if io else 0  # В МБ
-            }
-            logging.debug(f"Disk IO: {result}")
-            return result
+            new_io = psutil.disk_io_counters()
+            read_bytes = (new_io.read_bytes - self.disk_io.read_bytes) / (1024 ** 2)
+            write_bytes = (new_io.write_bytes - self.disk_io.write_bytes) / (1024 ** 2)
+            self.disk_io = new_io
+            return {"read_bytes": read_bytes, "write_bytes": write_bytes}
         except Exception as e:
-            logging.error(f"Disk IO error: {str(e)}")
+            logging.error(f"get_disk_io error: {str(e)}")
             return {"read_bytes": 0, "write_bytes": 0}
 
-    def get_gpu_usage(self):
-        """Возвращает загрузку и температуру GPU (NVIDIA или Intel)."""
+    def get_gpu_info(self):
         try:
-            # NVIDIA
-            result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu', '--format=csv,noheader'],
-                                  capture_output=True, text=True, timeout=1)
-            usage, temp = result.stdout.strip().split(',')
-            result = {
-                "usage": int(usage.strip().strip('%')),
-                "temp": int(temp.strip())
-            }
-            logging.debug(f"GPU usage (NVIDIA): {result}")
-            return result
+            if platform.system() == "Linux":
+                result = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,temperature.gpu", "--format=csv"],
+                                       capture_output=True, text=True)
+                lines = result.stdout.splitlines()
+                if len(lines) > 1:
+                    data = lines[1].split(", ")
+                    return {
+                        "usage": data[0].replace(" %", ""),
+                        "memory": data[1].replace(" %", ""),
+                        "temp": data[2]
+                    }
+            return {"usage": "N/A", "memory": "N/A", "temp": "N/A"}
         except Exception as e:
-            logging.error(f"NVIDIA GPU error: {str(e)}")
-            try:
-                # Intel
-                result = subprocess.run(['intel_gpu_top', '-J'], capture_output=True, text=True, timeout=1)
-                data = json.loads(result.stdout)
-                usage = data.get('engines', {}).get('Render/3D', {}).get('busy', 0)
-                result = {
-                    "usage": usage,
-                    "temp": "N/A"
-                }
-                logging.debug(f"GPU usage (Intel): {result}")
-                return result
-            except Exception as e:
-                logging.error(f"Intel GPU error: {str(e)}")
-                return {"usage": "N/A", "temp": "N/A"}
+            logging.error(f"get_gpu_info error: {str(e)}")
+            return {"usage": "N/A", "memory": "N/A", "temp": "N/A"}
 
-    def monitor_loop(self, callback, interval=1):
-        """Запускает мониторинг и передает данные в callback."""
+    def get_net_info(self):
         try:
-            while True:
+            new_io = psutil.net_io_counters()
+            bytes_sent = (new_io.bytes_sent - self.net_io.bytes_sent) / (1024 ** 2)
+            bytes_recv = (new_io.bytes_recv - self.net_io.bytes_recv) / (1024 ** 2)
+            self.net_io = new_io
+            return {"bytes_sent": bytes_sent, "bytes_recv": bytes_recv}
+        except Exception as e:
+            logging.error(f"get_net_info error: {str(e)}")
+            return {"bytes_sent": 0, "bytes_recv": 0}
+
+    def get_power_info(self):
+        try:
+            if platform.system() == "Linux":
+                with open("/sys/class/power_supply/BAT0/power_now", "r") as f:
+                    return f"{int(f.read()) / 1000000:.1f}"
+            return "N/A"
+        except Exception as e:
+            logging.error(f"get_power_info error: {str(e)}")
+            return "N/A"
+
+    def get_top_processes(self):
+        try:
+            processes = []
+            for proc in psutil.process_iter(['name', 'cpu_percent', 'memory_percent']):
+                processes.append({
+                    "name": proc.info['name'],
+                    "cpu": proc.info['cpu_percent'],
+                    "memory": proc.info['memory_percent']
+                })
+            return sorted(processes, key=lambda x: x['cpu'], reverse=True)[:5]
+        except Exception as e:
+            logging.error(f"get_top_processes error: {str(e)}")
+            return []
+
+    def monitor_loop(self, callback, interval):
+        while self.running:
+            try:
                 cpu_usage = self.get_cpu_usage()
                 cpu_freq = self.get_cpu_freq()
                 cpu_temp = self.get_cpu_temp()
-                ram_info = self.get_ram_usage()
+                fan_speeds = self.get_fan_speeds()
+                ram_info = self.get_ram_info()
+                ram_freq = self.get_ram_freq()
                 disk_usage = self.get_disk_usage()
                 disk_io = self.get_disk_io()
-                gpu_info = self.get_gpu_usage()
-                logging.debug("Calling callback with metrics")
-                callback(cpu_usage, cpu_freq, cpu_temp, ram_info, disk_usage, disk_io, gpu_info)
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            logging.info("Monitoring stopped gracefully")
-            print("Monitoring stopped gracefully.")
+                gpu_info = self.get_gpu_info()
+                net_info = self.get_net_info()
+                power_info = self.get_power_info()
+                top_processes = self.get_top_processes()
+
+                callback(cpu_usage, cpu_freq, cpu_temp, fan_speeds, ram_info, ram_freq, disk_usage, disk_io, gpu_info, net_info, power_info, top_processes)
+            except Exception as e:
+                logging.error(f"monitor_loop error: {str(e)}")
+            time.sleep(interval)
+
+    def stop(self):
+        self.running = False

@@ -1,41 +1,50 @@
+# diagnostics.py
 import psutil
 import logging
+import platform
+import subprocess
 
-logging.basicConfig(filename='diagnostics.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
+logging.basicConfig(filename='diagnostics.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Diagnostics:
     def check_hardware(self):
-        """Проверяет состояние железа."""
         errors = []
-
-        # Проверка температуры CPU
         try:
-            temps = psutil.sensors_temperatures()
-            for name, entries in temps.items():
-                for entry in entries:
-                    if "core" in entry.label.lower() and entry.current > 90:
-                        error = f"High CPU temperature: {entry.current}°C"
-                        errors.append(error)
-                        logging.warning(error)
-        except:
-            pass
+            # CPU
+            cpu_usage = psutil.cpu_percent()
+            if cpu_usage > 95:
+                errors.append("High CPU usage detected")
 
-        # Проверка ошибок диска
-        try:
-            io = psutil.disk_io_counters()
-            if io.read_time > 10000 or io.write_time > 10000:
-                error = "High disk I/O latency detected"
-                errors.append(error)
-                logging.warning(error)
-        except:
-            pass
+            # RAM
+            mem = psutil.virtual_memory()
+            if mem.percent > 90:
+                errors.append("High RAM usage detected")
 
-        # Проверка RAM
-        ram = psutil.virtual_memory()
-        if ram.percent > 95:
-            error = "Critical RAM usage: {:.1f}%".format(ram.percent)
-            errors.append(error)
-            logging.warning(error)
+            # Disk
+            disk = psutil.disk_usage("/")
+            if disk.percent > 90:
+                errors.append("Low disk space")
 
+            # Temperature (Linux only)
+            if platform.system() == "Linux":
+                temps = psutil.sensors_temperatures()
+                for name, entries in temps.items():
+                    for entry in entries:
+                        if entry.current > 85:
+                            errors.append(f"High temperature on {name}: {entry.current}°C")
+
+            # GPU (Linux with nvidia-smi)
+            if platform.system() == "Linux":
+                try:
+                    result = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv"],
+                                           capture_output=True, text=True)
+                    temp = int(result.stdout.splitlines()[1])
+                    if temp > 85:
+                        errors.append(f"High GPU temperature: {temp}°C")
+                except Exception:
+                    pass
+
+        except Exception as e:
+            errors.append(f"Diagnostics error: {str(e)}")
+            logging.error(f"Diagnostics error: {str(e)}")
         return errors
